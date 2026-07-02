@@ -6,9 +6,13 @@ from sqlalchemy.orm import Session
 from app.database.session import SessionLocal
 from app.models.job import ClipStatus, FrameStatus, Job, JobState, RenderType, Shot
 from app.services.openai_service import (
-    animate_frame, estimate_cost, export_ratios, generate_frame,
-    make_shotlist, motion_still, stitch_and_brand,
+    estimate_cost, generate_frame,
+    make_shotlist,
 )
+from app.services.ffmpeg_service import (
+    motion_still, stitch_and_brand, export_ratios,
+)
+from app.services.fal_service import animate_frame
 
 logger = logging.getLogger(__name__)
 

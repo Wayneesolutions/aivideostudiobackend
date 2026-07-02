@@ -23,7 +23,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
-    # AI Services (wired up later)
+    # AI Services
     OPENAI_API_KEY: str = ""
     FAL_API_KEY: str = ""
     ELEVENLABS_API_KEY: str = ""
