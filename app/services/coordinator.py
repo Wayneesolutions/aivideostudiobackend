@@ -110,10 +110,10 @@ async def run_assembling(job_id: str):
 
         clip_urls = [s.clip_url for s in job.shots if s.clip_url]
         brand_kit = job.client.brand_kit or {}
-        await stitch_and_brand(clip_urls, brand_kit)
+        assembled_url = await stitch_and_brand(clip_urls, brand_kit)
 
         _set_state(db, job, JobState.EXPORTING)
-        final_urls = await export_ratios("assembled")
+        final_urls = await export_ratios(assembled_url)
         job.cost_total = sum(float(s.cost or 0) for s in job.shots)
         job.final_urls = final_urls
         _set_state(db, job, JobState.DONE)
