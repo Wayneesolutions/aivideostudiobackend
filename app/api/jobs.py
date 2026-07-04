@@ -37,6 +37,7 @@ def create_job(
         budget_cap=BUDGET_CAPS[req.mode.value],
         thread_id=req.thread_id or str(uuid.uuid4()),
         state=JobState.CREATED,
+        num_shots=req.num_shots,
     )
     db.add(job)
     db.commit()
@@ -98,6 +99,27 @@ def get_job(job_id: str, db: Session = Depends(get_db), _admin=Depends(get_curre
     return _job_detail(job)
 
 
+@router.patch("/{job_id}/mode")
+def update_job_mode(
+    job_id: str,
+    mode: str,
+    db: Session = Depends(get_db),
+    _admin=Depends(get_current_admin),
+):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    from app.models.client import QualityMode
+    from app.services.openai_service import BUDGET_CAPS
+    try:
+        job.mode = QualityMode(mode)
+        job.budget_cap = BUDGET_CAPS.get(mode, 1.50)
+        db.commit()
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+    return {"message": f"Mode updated to {mode}", "mode": mode}
+
+
 @router.delete("/{job_id}")
 def delete_job(
     job_id: str,
@@ -121,6 +143,8 @@ def delete_job(
     )
 
     return {"message": f"Job '{name}' deleted successfully"}
+
+
 
 
 @router.post("/{job_id}/message")

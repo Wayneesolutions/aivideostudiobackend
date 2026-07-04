@@ -25,9 +25,9 @@ BUDGET_CAPS = {
 }
 
 ROUTING = {
-    "economy":  {"animate_count": 1,  "model": "wan"},
-    "standard": {"animate_count": 99, "model": "kling"},
-    "premium":  {"animate_count": 99, "model": "kling"},
+    "economy":  {"animate_count": 1,  "model": "wan"},    # 1 shot Kling 720p, rest FFmpeg
+    "standard": {"animate_count": 99, "model": "wan"},    # All shots Kling 720p
+    "premium":  {"animate_count": 99, "model": "kling"},  # All shots Kling 1080p
 }
 
 SYSTEM_PROMPT = """You are a professional video production planner for Wayne E Solutions, 
@@ -63,20 +63,23 @@ def _get_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key)
 
 
-async def make_shotlist(brief: str, mode: str) -> list[dict]:
+async def make_shotlist(brief: str, mode: str, num_shots: int = 4) -> list[dict]:
     """Use GPT-4o mini to intelligently plan shots from the brief."""
     client = _get_client()
     routing = ROUTING.get(mode, ROUTING["economy"])
+    # Clamp num_shots between 1 and 8
+    num_shots = max(1, min(8, num_shots))
 
     user_message = f"""
 Client Brief: {brief}
 
 Quality Mode: {mode.upper()}
 Budget Cap: ${BUDGET_CAPS.get(mode, 1.50)}
+Number of shots required: EXACTLY {num_shots} shots (no more, no less)
 Animate quota: {"1 shot only (hero shot)" if mode == "economy" else "all shots"}
 Default video model: {routing["model"]}
 
-Plan the shot list now.
+Plan exactly {num_shots} shots now.
 """
 
     try:
@@ -122,21 +125,23 @@ Plan the shot list now.
 
     except json.JSONDecodeError as e:
         logger.error(f"GPT returned invalid JSON: {e}. Raw: {raw[:200]}")
-        return _fallback_shotlist(brief, mode)
+        return _fallback_shotlist(brief, mode, num_shots)
     except Exception as e:
         logger.error(f"make_shotlist failed: {e}")
-        return _fallback_shotlist(brief, mode)
+        return _fallback_shotlist(brief, mode, num_shots)
 
 
-def _fallback_shotlist(brief: str, mode: str) -> list[dict]:
+def _fallback_shotlist(brief: str, mode: str, num_shots: int = 4) -> list[dict]:
     """Fallback hardcoded shotlist if GPT fails."""
     routing = ROUTING.get(mode, ROUTING["economy"])
-    shots = [
-        {"idx": 0, "description": f"Opening shot — {brief[:80]}", "motion": "slow zoom in",  "duration_sec": 5},
-        {"idx": 1, "description": "Product hero shot — close up detail", "motion": "pan left", "duration_sec": 4},
-        {"idx": 2, "description": "Lifestyle context shot",              "motion": "slow zoom out", "duration_sec": 5},
-        {"idx": 3, "description": "Brand end-card with call to action",  "motion": "fade in", "duration_sec": 3},
+    all_shots = [
+        {"idx": 0, "description": f"Opening shot — {brief[:80]}", "motion": "slow zoom in", "duration_sec": 5},
+        {"idx": 1, "description": "Product hero shot — close up detail", "motion": "pan left", "duration_sec": 5},
+        {"idx": 2, "description": "Lifestyle context shot", "motion": "slow zoom out", "duration_sec": 5},
+        {"idx": 3, "description": "Brand end-card with call to action", "motion": "fade in", "duration_sec": 5},
+        {"idx": 4, "description": "Final product reveal", "motion": "slow zoom in", "duration_sec": 5},
     ]
+    shots = all_shots[:num_shots]
     animate_count = routing["animate_count"]
     for i, shot in enumerate(shots):
         if i < animate_count:

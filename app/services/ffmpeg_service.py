@@ -1,10 +1,6 @@
 """
 Real FFmpeg service for Wayne AI Video Studio.
-
-Handles:
-- motion_still: Ken-Burns pan/zoom effect on images (Economy mode - FREE)
-- stitch_and_brand: Join all clips into one video with brand overlay
-- export_ratios: Export final video in 9:16, 1:1, 16:9 formats
+Uses scale+crop for smooth Ken-Burns instead of zoompan.
 """
 import asyncio
 import logging
@@ -23,37 +19,56 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR = Path("static/images")
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
+BRAND_NAME = "Wayne E Solutions"
+TAGLINE = "Luxury Redefined"
+CTA = "wayneesolutions.com"
+
+FPS = 30
+DURATION = 5
+WIDTH = 1080
+HEIGHT = 1920
+
+
+def _get_font_path() -> str:
+    system_fonts = [
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/Arial.ttf",
+    ]
+    for sf in system_fonts:
+        if os.path.exists(sf):
+            return sf.replace("C:/", "C\\\\:/")
+    return ""
+
 
 def _run_ffmpeg(args: list[str]) -> bool:
-    """Run an FFmpeg command. Returns True if successful."""
     cmd = ["ffmpeg", "-y"] + args
     logger.info(f"Running FFmpeg: {' '.join(cmd[:6])}...")
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr[-500:]}")
+            logger.error(f"FFmpeg error: {result.stderr[-300:]}")
             return False
         return True
     except subprocess.TimeoutExpired:
         logger.error("FFmpeg timed out")
         return False
     except FileNotFoundError:
-        logger.error("FFmpeg not found — make sure it is installed and in PATH")
+        logger.error("FFmpeg not found")
         return False
 
 
+async def _run_ffmpeg_async(args: list[str]) -> bool:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _run_ffmpeg, args)
+
+
 async def _download_image(url: str) -> Path | None:
-    """Download an image from a URL to a local temp file."""
     try:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.get(url)
             response.raise_for_status()
-            ext = ".jpg" if "jpg" in url or "jpeg" in url else ".png"
+            ext = ".png"
             path = IMAGES_DIR / f"temp_{uuid.uuid4().hex}{ext}"
             path.write_bytes(response.content)
             return path
@@ -62,127 +77,200 @@ async def _download_image(url: str) -> Path | None:
         return None
 
 
-async def motion_still(frame_url: str, motion: str) -> tuple[str, float]:
-    """
-    Apply Ken-Burns pan/zoom effect to a still image using FFmpeg.
-    This is the FREE Economy mode path — no AI video model needed.
-    """
-    # Download the source image
+def _smooth_kenburns_filter(motion: str) -> str:
+    """Simple still image — no movement, clean and stable."""
+    return f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black"
+
+
+def _make_text_filter(shot_idx: int, total_shots: int, font_path: str) -> str:
+    ff = f":fontfile={font_path}" if font_path else ""
+    filters = []
+
+    if shot_idx == 0:
+        filters.append(f"drawbox=x=0:y=0:w=iw:h=120:color=black@0.6:t=fill")
+        filters.append(
+            f"drawtext=text={BRAND_NAME}{ff}"
+            f":fontsize=52:fontcolor=white"
+            f":x=(w-text_w)/2:y=35"
+            f":shadowcolor=black:shadowx=2:shadowy=2"
+        )
+    elif shot_idx == total_shots - 1:
+        filters.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.35:t=fill")
+        filters.append(
+            f"drawtext=text={BRAND_NAME}{ff}"
+            f":fontsize=60:fontcolor=gold"
+            f":x=(w-text_w)/2:y=(h-text_h)/2-80"
+            f":shadowcolor=black:shadowx=3:shadowy=3"
+        )
+        filters.append(
+            f"drawtext=text={TAGLINE}{ff}"
+            f":fontsize=36:fontcolor=white"
+            f":x=(w-text_w)/2:y=(h-text_h)/2+10"
+            f":shadowcolor=black:shadowx=2:shadowy=2"
+        )
+        filters.append(f"drawbox=x=0:y=ih-120:w=iw:h=120:color=black@0.7:t=fill")
+        filters.append(
+            f"drawtext=text={CTA}{ff}"
+            f":fontsize=30:fontcolor=white"
+            f":x=(w-text_w)/2:y=ih-70"
+        )
+    else:
+        filters.append(f"drawbox=x=0:y=ih-110:w=iw:h=110:color=black@0.55:t=fill")
+        filters.append(
+            f"drawtext=text={TAGLINE}{ff}"
+            f":fontsize=42:fontcolor=white"
+            f":x=(w-text_w)/2:y=ih-70"
+            f":shadowcolor=black:shadowx=2:shadowy=2"
+        )
+
+    return ",".join(filters)
+
+
+async def motion_still(
+    frame_url: str,
+    motion: str,
+    shot_idx: int = 0,
+    total_shots: int = 4,
+    brand_kit: dict = {},
+) -> tuple[str, float]:
+
     img_path = await _download_image(frame_url)
     if not img_path:
-        # Fallback stub if download fails
         clip_id = str(uuid.uuid4())[:8]
         return f"https://stub-cdn.wayneesolutions.com/motion/{clip_id}.mp4", 0.0
 
     output_path = OUTPUT_DIR / f"motion_{uuid.uuid4().hex}.mp4"
 
-    # Choose zoom direction based on motion hint
-    motion_lower = motion.lower() if motion else ""
-    if "zoom in" in motion_lower:
-        zoom_filter = "zoompan=z='min(zoom+0.0015,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
-    elif "zoom out" in motion_lower:
-        zoom_filter = "zoompan=z='if(lte(zoom,1.0),1.5,max(1.001,zoom-0.0015))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
-    elif "pan left" in motion_lower:
-        zoom_filter = "zoompan=z=1.3:x='iw/2-(iw/zoom/2)+((iw/zoom/2)*on/125)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
-    elif "pan right" in motion_lower:
-        zoom_filter = "zoompan=z=1.3:x='iw/2-(iw/zoom/2)-((iw/zoom/2)*on/125)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
-    elif "fade" in motion_lower:
-        zoom_filter = "zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
-    else:
-        # Default: gentle zoom in
-        zoom_filter = "zoompan=z='min(zoom+0.001,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=125:s=1080x1920"
+    kenburns = _smooth_kenburns_filter(motion)
+    fade = f"fade=t=in:st=0:d=0.4,fade=t=out:st={DURATION - 0.4}:d=0.4"
+    font_path = _get_font_path()
+    text = _make_text_filter(shot_idx, total_shots, font_path)
+    vf = f"{kenburns},{fade},{text}"
 
-    success = _run_ffmpeg([
+    success = await _run_ffmpeg_async([
         "-loop", "1",
+        "-framerate", str(FPS),
         "-i", str(img_path),
-        "-vf", f"{zoom_filter},fps=25",
-        "-t", "5",
+        "-vf", vf,
+        "-t", str(DURATION),
+        "-r", str(FPS),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        "-preset", "fast",
+        "-preset", "medium",
+        "-crf", "18",
+        "-movflags", "+faststart",
         str(output_path),
     ])
 
-    # Clean up temp image
     try:
         img_path.unlink()
     except Exception:
         pass
 
     if success and output_path.exists():
-        url = f"http://127.0.0.1:8000/static/videos/{output_path.name}"
         logger.info(f"motion_still complete: {output_path.name}")
-        return url, 0.0
-    else:
-        clip_id = str(uuid.uuid4())[:8]
-        return f"https://stub-cdn.wayneesolutions.com/motion/{clip_id}.mp4", 0.0
+        return f"http://127.0.0.1:8000/static/videos/{output_path.name}", 0.0
+
+    # Fallback without text
+    logger.warning("Retrying without text overlay")
+    img_path2 = await _download_image(frame_url)
+    if img_path2:
+        output_path2 = OUTPUT_DIR / f"motion_{uuid.uuid4().hex}.mp4"
+        success2 = await _run_ffmpeg_async([
+            "-loop", "1",
+            "-framerate", str(FPS),
+            "-i", str(img_path2),
+            "-vf", f"{kenburns},{fade}",
+            "-t", str(DURATION),
+            "-r", str(FPS),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "medium",
+            "-crf", "18",
+            "-movflags", "+faststart",
+            str(output_path2),
+        ])
+        try:
+            img_path2.unlink()
+        except Exception:
+            pass
+        if success2 and output_path2.exists():
+            logger.info(f"motion_still (no text) complete: {output_path2.name}")
+            return f"http://127.0.0.1:8000/static/videos/{output_path2.name}", 0.0
+
+    clip_id = str(uuid.uuid4())[:8]
+    return f"https://stub-cdn.wayneesolutions.com/motion/{clip_id}.mp4", 0.0
 
 
 async def stitch_and_brand(clip_urls: list[str], brand_kit: dict) -> str:
-    """
-    Stitch all clips into one video using FFmpeg concat.
-    Optionally overlay brand text from brand_kit.
-    """
     if not clip_urls:
         video_id = str(uuid.uuid4())[:8]
         return f"https://stub-cdn.wayneesolutions.com/assembled/{video_id}.mp4"
 
-    # Separate local clips from stub URLs
-    local_clips = [u for u in clip_urls if "127.0.0.1" in u or u.startswith("/")]
-    stub_clips = [u for u in clip_urls if u not in local_clips]
+    import httpx
+
+    # Download all clips to local files (handles both local and fal.ai URLs)
+    local_clips = []
+    for url in clip_urls:
+        if not url or "stub-cdn" in url:
+            continue
+        if "127.0.0.1" in url:
+            clip_file = url.replace("http://127.0.0.1:8000/static/videos/", "")
+            clip_path = OUTPUT_DIR / clip_file
+            if clip_path.exists():
+                local_clips.append(str(clip_path.absolute()))
+        else:
+            # External URL (fal.ai) — download first
+            try:
+                logger.info(f"Downloading fal.ai clip: {url[:60]}")
+                async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    tmp_path = OUTPUT_DIR / f"clip_{uuid.uuid4().hex}.mp4"
+                    tmp_path.write_bytes(resp.content)
+                    local_clips.append(str(tmp_path.absolute()))
+                    logger.info(f"Downloaded: {tmp_path.name} ({len(resp.content)//1024}KB)")
+            except Exception as e:
+                logger.error(f"Failed to download clip {url}: {e}")
 
     if not local_clips:
-        # All stubs — return stub assembled URL
         video_id = str(uuid.uuid4())[:8]
         return f"https://stub-cdn.wayneesolutions.com/assembled/{video_id}.mp4"
 
     output_path = OUTPUT_DIR / f"assembled_{uuid.uuid4().hex}.mp4"
 
     if len(local_clips) == 1:
-        # Only one clip — just copy it
-        clip_file = local_clips[0].replace("http://127.0.0.1:8000/static/videos/", "")
-        clip_path = OUTPUT_DIR / clip_file
-        success = _run_ffmpeg([
-            "-i", str(clip_path),
-            "-c", "copy",
-            str(output_path),
+        success = await _run_ffmpeg_async([
+            "-i", local_clips[0], "-c", "copy", str(output_path)
         ])
     else:
-        # Multiple clips — use concat
         concat_file = OUTPUT_DIR / f"concat_{uuid.uuid4().hex}.txt"
         with open(concat_file, "w") as f:
-            for url in local_clips:
-                clip_file = url.replace("http://127.0.0.1:8000/static/videos/", "")
-                clip_path = OUTPUT_DIR / clip_file
-                if clip_path.exists():
-                    f.write(f"file '{clip_path.absolute()}'\n")
+            for clip_path in local_clips:
+                f.write(f"file '{clip_path}'\n")
 
-        success = _run_ffmpeg([
-            "-f", "concat",
-            "-safe", "0",
+        success = await _run_ffmpeg_async([
+            "-f", "concat", "-safe", "0",
             "-i", str(concat_file),
-            "-c", "copy",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "medium", "-crf", "18",
+            "-movflags", "+faststart",
             str(output_path),
         ])
-
         try:
             concat_file.unlink()
         except Exception:
             pass
 
     if success and output_path.exists():
-        url = f"http://127.0.0.1:8000/static/videos/{output_path.name}"
         logger.info(f"stitch complete: {output_path.name}")
-        return url
-    else:
-        video_id = str(uuid.uuid4())[:8]
-        return f"https://stub-cdn.wayneesolutions.com/assembled/{video_id}.mp4"
+        return f"http://127.0.0.1:8000/static/videos/{output_path.name}"
+
+    video_id = str(uuid.uuid4())[:8]
+    return f"https://stub-cdn.wayneesolutions.com/assembled/{video_id}.mp4"
 
 
 async def export_ratios(video_url: str) -> dict:
-    """
-    Export the final video in 9:16, 1:1, and 16:9 ratios using FFmpeg.
-    """
     if "stub-cdn" in video_url:
         vid_id = str(uuid.uuid4())[:8]
         return {
@@ -191,20 +279,17 @@ async def export_ratios(video_url: str) -> dict:
             "16:9": f"https://stub-cdn.wayneesolutions.com/final/{vid_id}_169.mp4",
         }
 
-    # Extract just the filename from the URL
     filename = video_url.split("/")[-1]
     input_path = OUTPUT_DIR / filename
 
     logger.info(f"export_ratios looking for: {input_path} (exists: {input_path.exists()})")
 
     if not input_path.exists():
-        # Try searching the directory for the file
         matches = list(OUTPUT_DIR.glob(f"*{filename}*"))
         if matches:
             input_path = matches[0]
-            logger.info(f"Found file at: {input_path}")
         else:
-            logger.error(f"Could not find video file: {filename}")
+            logger.error(f"Could not find: {filename}")
             vid_id = str(uuid.uuid4())[:8]
             return {
                 "9:16": f"https://stub-cdn.wayneesolutions.com/final/{vid_id}_916.mp4",
@@ -221,12 +306,12 @@ async def export_ratios(video_url: str) -> dict:
     result = {}
     for ratio, (w, h, out_filename) in ratios.items():
         output_path = OUTPUT_DIR / out_filename
-        success = _run_ffmpeg([
+        success = await _run_ffmpeg_async([
             "-i", str(input_path),
             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "fast",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "medium", "-crf", "18",
+            "-movflags", "+faststart",
             str(output_path),
         ])
         if success and output_path.exists():

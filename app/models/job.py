@@ -69,6 +69,7 @@ class Job(Base):
     cost_total = Column(Numeric(8, 2), default=0.00)
     final_urls = Column(JSON, nullable=True)
     thread_id = Column(String(100), nullable=True)
+    num_shots = Column(Integer, default=4, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=datetime.utcnow

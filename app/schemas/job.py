@@ -13,6 +13,7 @@ class CreateJobRequest(BaseModel):
     mode: QualityMode = QualityMode.economy
     job_type: JobType = JobType.studio
     thread_id: Optional[str] = None
+    num_shots: int = 4  # Controls video duration: 1=5s, 2=10s, 3=15s, 4=20s, 6=30s
 
 
 class ChatMessageRequest(BaseModel):

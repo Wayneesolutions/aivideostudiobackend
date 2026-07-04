@@ -31,7 +31,7 @@ async def run_planning(job_id: str):
             return
         _set_state(db, job, JobState.PLANNING)
 
-        shots_data = await make_shotlist(job.brief_text, job.mode.value)
+        shots_data = await make_shotlist(job.brief_text, job.mode.value, job.num_shots)
         for s in shots_data:
             db.add(Shot(
                 job_id=job.id,
@@ -85,7 +85,8 @@ async def run_rendering_motion(job_id: str):
                 if shot.render_type == RenderType.animate:
                     url, cost = await animate_frame(shot.frame_url, shot.motion, shot.model)
                 else:
-                    url, cost = await motion_still(shot.frame_url, shot.motion)
+                    total = len(job.shots)
+                    url, cost = await motion_still(shot.frame_url, shot.motion, shot.idx, total)
                 shot.clip_url = url
                 shot.clip_status = ClipStatus.ready
                 shot.cost = cost
