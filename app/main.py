@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.activity import router as activity_router
 from app.api.auth import router as auth_router
+from app.api.brand_kit import router as brand_kit_router
 from app.api.clients import router as clients_router
 from app.api.dashboard import router as dashboard_router
 from app.api.images import router as images_router
@@ -16,8 +17,7 @@ from app.api.settings import router as settings_router
 from app.core.config import settings
 from app.database.session import Base, engine
 
-# Import all models so SQLAlchemy creates every table on startup
-from app.models import admin, client, job, setting, activity  # noqa: F401
+from app.models import admin, client, job, setting, activity, image_generation, brand_kit  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ app.include_router(dashboard_router)
 app.include_router(settings_router)
 app.include_router(images_router)
 app.include_router(activity_router)
+app.include_router(brand_kit_router)
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
