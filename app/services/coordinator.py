@@ -31,7 +31,14 @@ async def run_planning(job_id: str):
             return
         _set_state(db, job, JobState.PLANNING)
 
-        shots_data = await make_shotlist(job.brief_text, job.mode.value, job.num_shots)
+        # Check if brief mentions reference image — analyze it if so
+        enhanced_brief = job.brief_text
+        if "Reference image provided by client" in job.brief_text:
+            logger.info(f"Job {job.id} has reference image — vision analysis would enhance planning")
+            # Note: actual image data not stored in DB for security
+            # Brief already enhanced on frontend before job creation
+
+        shots_data = await make_shotlist(enhanced_brief, job.mode.value, job.num_shots)
         for s in shots_data:
             db.add(Shot(
                 job_id=job.id,

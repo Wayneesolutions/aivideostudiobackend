@@ -25,9 +25,9 @@ BUDGET_CAPS = {
 }
 
 ROUTING = {
-    "economy":  {"animate_count": 1,  "model": "wan"},    # 1 shot Kling 720p, rest FFmpeg
-    "standard": {"animate_count": 99, "model": "wan"},    # All shots Kling 720p
-    "premium":  {"animate_count": 99, "model": "kling"},  # All shots Kling 1080p
+    "economy":  {"animate_count": 1,  "model": "wan"},    # 1 Wan shot, rest FFmpeg
+    "standard": {"animate_count": 99, "model": "wan"},    # All shots Wan T2V 720p
+    "premium":  {"animate_count": 99, "model": "kling"},  # All shots Kling T2V 720p
 }
 
 SYSTEM_PROMPT = """You are a professional video production planner for Wayne E Solutions, 
@@ -61,6 +61,48 @@ def _get_client() -> AsyncOpenAI:
     if not api_key:
         raise ValueError("OPENAI_API_KEY is not set in .env")
     return AsyncOpenAI(api_key=api_key)
+
+
+async def analyze_reference_image(image_data_url: str) -> str:
+    """
+    Use GPT-4o mini vision to analyze a reference image and describe it
+    for use in shot planning.
+    """
+    client = _get_client()
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": image_data_url}
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "You are a professional advertising photographer analyzing a product/brand image. "
+                                "Describe this image in detail for a video production team. Include: "
+                                "1) What the product/subject is, "
+                                "2) Key visual elements (colors, textures, shapes), "
+                                "3) Brand style (luxury, casual, etc.), "
+                                "4) Suggested camera angles and shots that would showcase it best. "
+                                "Keep it concise — 3-4 sentences max."
+                            )
+                        }
+                    ]
+                }
+            ],
+            max_tokens=200,
+        )
+        description = response.choices[0].message.content.strip()
+        logger.info(f"GPT vision analyzed reference image: {description[:80]}")
+        return description
+    except Exception as e:
+        logger.error(f"Vision analysis failed: {e}")
+        return ""
 
 
 async def make_shotlist(brief: str, mode: str, num_shots: int = 4) -> list[dict]:
