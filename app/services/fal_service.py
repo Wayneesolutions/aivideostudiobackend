@@ -1,7 +1,8 @@
 """
 Real fal.ai integration.
-Medium = Wan text-to-video (720p, cheaper)
-Premium = Kling text-to-video (720p, better quality)
+Medium = Wan 2.2 text-to-video 720p (~$0.04/sec)
+Premium = Kling 2.5 Turbo text-to-video 720p (~$0.07/sec)
+Images = Flux (~$0.003/image)
 """
 import asyncio
 import logging
@@ -13,17 +14,18 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Wan text-to-video — Medium mode (cheaper)
-FAL_WAN_T2V = "fal-ai/wan/v2.2-5b/text-to-video"
-# Kling text-to-video — Premium mode (better quality)
-FAL_KLING_T2V = "fal-ai/kling-video/v1.6/pro/text-to-video"
-# Image-to-video fallbacks
+# Video models
+FAL_WAN_T2V = "fal-ai/wan/v2.2-5b/text-to-video"           # Medium - cheapest
+FAL_KLING_T2V = "fal-ai/kling-video/v2.5/turbo/text-to-video"  # Premium - better quality
 FAL_WAN_I2V = "fal-ai/wan/v2.2-5b/image-to-video"
-FAL_KLING_I2V = "fal-ai/kling-video/v1.6/pro/image-to-video"
+FAL_KLING_I2V = "fal-ai/kling-video/v2.5/turbo/image-to-video"
+
+# Image model - Flux (cheapest, ~$0.003/image)
+FAL_FLUX_MODEL = "fal-ai/flux/schnell"
 
 MODEL_COST_PER_SEC = {
-    "wan": 0.05,    # Wan cheaper
-    "kling": 0.10,  # Kling more expensive
+    "wan": 0.04,    # Wan 2.2 ~$0.04/sec
+    "kling": 0.07,  # Kling 2.5 Turbo ~$0.07/sec
 }
 
 
@@ -47,12 +49,64 @@ def _extract_video_url(result) -> str | None:
     return None
 
 
+def _extract_image_url(result) -> str | None:
+    if not result:
+        return None
+    if isinstance(result, dict):
+        images = result.get("images") or []
+        if images:
+            img = images[0]
+            return img.get("url") if isinstance(img, dict) else getattr(img, "url", None)
+    else:
+        images = getattr(result, "images", None) or []
+        if images:
+            img = images[0]
+            return img.get("url") if isinstance(img, dict) else getattr(img, "url", None)
+    return None
+
+
+async def generate_image_flux(prompt: str) -> str | None:
+    """
+    Generate image using fal.ai Flux Schnell.
+    Cost: ~$0.003 per image (90% cheaper than DALL-E 3)
+    """
+    if not settings.FAL_API_KEY:
+        return None
+
+    try:
+        fal_client = _get_fal_client()
+        logger.info(f"Generating Flux image: {prompt[:60]}")
+
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: fal_client.subscribe(
+                FAL_FLUX_MODEL,
+                arguments={
+                    "prompt": prompt,
+                    "image_size": "square_hd",
+                    "num_images": 1,
+                    "num_inference_steps": 4,
+                    "enable_safety_checker": True,
+                },
+            )
+        )
+
+        image_url = _extract_image_url(result)
+        if image_url:
+            logger.info(f"Flux image generated: {image_url[:60]}")
+            return image_url
+
+    except Exception as e:
+        logger.error(f"Flux image generation failed: {e}")
+
+    return None
+
+
 async def animate_frame(frame_url: str, motion: str, model: str) -> tuple[str, float]:
     """
     Generate real AI video.
-    model='wan' → Wan text-to-video 720p (Medium)
-    model='kling' → Kling text-to-video 720p (Premium)
-    Falls back to FFmpeg if all fail.
+    model='wan' → Wan 2.2 T2V 720p (~$0.04/sec) — Medium
+    model='kling' → Kling 2.5 Turbo T2V 720p (~$0.07/sec) — Premium
     """
     if not settings.FAL_API_KEY:
         logger.warning("FAL_API_KEY not set — falling back to FFmpeg")
@@ -60,27 +114,29 @@ async def animate_frame(frame_url: str, motion: str, model: str) -> tuple[str, f
         return await motion_still(frame_url, motion)
 
     duration = 5
-    cost = duration * MODEL_COST_PER_SEC.get(model, 0.05)
+    cost = duration * MODEL_COST_PER_SEC.get(model, 0.04)
     fal_client = _get_fal_client()
 
     text_prompt = (
         f"{motion or 'cinematic professional advertisement scene'}, "
-        f"smooth natural movement, real people moving naturally, "
-        f"high quality commercial video, professional lighting, premium brand aesthetic"
+        f"smooth natural movement, high quality commercial video, "
+        f"professional lighting, premium brand aesthetic"
     )
 
-    # Both use 720p — Kling for premium quality, Wan for cost efficiency
     if model == "kling":
         t2v_model = FAL_KLING_T2V
         i2v_model = FAL_KLING_I2V
         t2v_args = {
             "prompt": text_prompt,
             "duration": "5",
-            "cfg_scale": 0.5,
             "aspect_ratio": "9:16",
         }
+        i2v_args = {
+            "prompt": text_prompt,
+            "duration": "5",
+        }
     else:
-        # Wan text-to-video
+        # Wan 2.2
         t2v_model = FAL_WAN_T2V
         i2v_model = FAL_WAN_I2V
         t2v_args = {
@@ -89,8 +145,13 @@ async def animate_frame(frame_url: str, motion: str, model: str) -> tuple[str, f
             "resolution": "720p",
             "aspect_ratio": "9:16",
         }
+        i2v_args = {
+            "prompt": text_prompt,
+            "duration": "5",
+            "resolution": "720p",
+        }
 
-    logger.info(f"Submitting {model.upper()} text-to-video: {text_prompt[:60]}")
+    logger.info(f"Submitting {model.upper()} T2V: {text_prompt[:60]}")
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(
@@ -104,9 +165,8 @@ async def animate_frame(frame_url: str, motion: str, model: str) -> tuple[str, f
         raise Exception("No video URL in T2V result")
 
     except Exception as e:
-        logger.error(f"{model.upper()} T2V failed: {e} — trying image-to-video fallback")
+        logger.error(f"{model.upper()} T2V failed: {e} — trying I2V fallback")
 
-        # Try image-to-video fallback
         try:
             import httpx
             public_url = frame_url
@@ -124,16 +184,7 @@ async def animate_frame(frame_url: str, motion: str, model: str) -> tuple[str, f
                 except Exception:
                     pass
 
-            i2v_args = {
-                "image_url": public_url,
-                "prompt": text_prompt,
-                "duration": "5",
-            }
-            if model == "kling":
-                i2v_args["cfg_scale"] = 0.5
-            else:
-                i2v_args["resolution"] = "720p"
-
+            i2v_args["image_url"] = public_url
             result2 = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: fal_client.subscribe(i2v_model, arguments=i2v_args)

@@ -25,9 +25,9 @@ BUDGET_CAPS = {
 }
 
 ROUTING = {
-    "economy":  {"animate_count": 1,  "model": "wan"},    # 1 Wan shot, rest FFmpeg
-    "standard": {"animate_count": 99, "model": "wan"},    # All shots Wan T2V 720p
-    "premium":  {"animate_count": 99, "model": "kling"},  # All shots Kling T2V 720p
+    "economy":  {"animate_count": 1,  "model": "wan"},    # 1 Wan shot, rest FFmpeg free
+    "standard": {"animate_count": 99, "model": "wan"},    # All shots Wan 2.2 T2V 720p
+    "premium":  {"animate_count": 99, "model": "kling"},  # All shots Kling 2.5 Turbo 720p
 }
 
 SYSTEM_PROMPT = """You are a professional video production planner for Wayne E Solutions, 
@@ -202,32 +202,33 @@ async def estimate_cost(mode: str) -> float:
 
 
 async def generate_frame(description: str) -> str:
-    """Generate a real keyframe image using DALL-E 3."""
-    client = _get_client()
+    """
+    Generate a keyframe image.
+    Uses fal.ai Flux first (~$0.003/image - cheapest)
+    Falls back to DALL-E 2 (~$0.02/image) if Flux fails
+    Falls back to picsum if both fail
+    """
+    # Try Flux first (cheapest)
+    try:
+        from app.services.fal_service import generate_image_flux
+        flux_url = await generate_image_flux(description)
+        if flux_url:
+            logger.info(f"Flux image generated for: {description[:60]}")
+            return flux_url
+    except Exception as e:
+        logger.warning(f"Flux failed, trying DALL-E 2: {e}")
 
+    # Fallback to DALL-E 2
+    client = _get_client()
     try:
         response = await client.images.generate(
-            model="gpt-image-1",
-            prompt=description,
+            model="dall-e-2",
+            prompt=description[:1000],
             n=1,
             size="1024x1024",
         )
-
-        # gpt-image-1 returns base64, not a URL
-        import base64, uuid, os
-        image_data = response.data[0].b64_json
-        if image_data:
-            # Save to local static folder and return path
-            os.makedirs("static/images", exist_ok=True)
-            filename = f"{uuid.uuid4().hex}.png"
-            filepath = f"static/images/{filename}"
-            with open(filepath, "wb") as f:
-                f.write(base64.b64decode(image_data))
-            image_url = f"http://127.0.0.1:8000/static/images/{filename}"
-        else:
-            image_url = response.data[0].url
-
-        logger.info(f"Generated real image for: {description[:60]}")
+        image_url = response.data[0].url
+        logger.info(f"DALL-E 2 image generated for: {description[:60]}")
         return image_url
 
     except Exception as e:

@@ -38,6 +38,9 @@ def create_job(
         thread_id=req.thread_id or str(uuid.uuid4()),
         state=JobState.CREATED,
         num_shots=req.num_shots,
+        logo_url=req.logo_url,
+        overlay_text=req.overlay_text,
+        overlay_color=req.overlay_color,
     )
     db.add(job)
     db.commit()
@@ -99,7 +102,30 @@ def get_job(job_id: str, db: Session = Depends(get_db), _admin=Depends(get_curre
     return _job_detail(job)
 
 
-@router.patch("/{job_id}/mode")
+@router.patch("/{job_id}/shots")
+def update_shot_frames(
+    job_id: str,
+    frame_updates: list[dict],
+    db: Session = Depends(get_db),
+    _admin=Depends(get_current_admin),
+):
+    """Update shot frame_urls with branded/overlaid images."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    for update in frame_updates:
+        shot_idx = update.get("idx")
+        new_url = update.get("frame_url")
+        if shot_idx is not None and new_url:
+            for shot in job.shots:
+                if shot.idx == shot_idx:
+                    shot.frame_url = new_url
+                    break
+    db.commit()
+    return {"message": "Shot frames updated"}
+
+
+
 def update_job_mode(
     job_id: str,
     mode: str,
@@ -144,6 +170,27 @@ def delete_job(
 
     return {"message": f"Job '{name}' deleted successfully"}
 
+
+
+
+@router.patch("/{job_id}/shots/{shot_idx}/frame")
+def update_shot_frame(
+    job_id: str,
+    shot_idx: int,
+    frame_url: str,
+    db: Session = Depends(get_db),
+    _admin=Depends(get_current_admin),
+):
+    """Update a shot's frame URL with a branded/overlaid version."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    shot = next((s for s in job.shots if s.idx == shot_idx), None)
+    if not shot:
+        raise HTTPException(status_code=404, detail="Shot not found")
+    shot.frame_url = frame_url
+    db.commit()
+    return {"message": "Frame URL updated", "shot_idx": shot_idx}
 
 
 
