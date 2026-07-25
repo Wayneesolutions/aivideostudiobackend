@@ -31,7 +31,14 @@ async def run_planning(job_id: str):
             return
         _set_state(db, job, JobState.PLANNING)
 
-        shots_data = await make_shotlist(job.brief_text, job.mode.value, job.num_shots)
+        # Check if brief mentions reference image — analyze it if so
+        enhanced_brief = job.brief_text
+        if "Reference image provided by client" in job.brief_text:
+            logger.info(f"Job {job.id} has reference image — vision analysis would enhance planning")
+            # Note: actual image data not stored in DB for security
+            # Brief already enhanced on frontend before job creation
+
+        shots_data = await make_shotlist(enhanced_brief, job.mode.value, job.num_shots)
         for s in shots_data:
             db.add(Shot(
                 job_id=job.id,
@@ -82,7 +89,12 @@ async def run_rendering_motion(job_id: str):
 
         async def render(shot: Shot):
             try:
-                if shot.render_type == RenderType.animate:
+                # Smart Video Studio always uses FFmpeg (free, fast, predictable)
+                # Create Video uses fal.ai Kling/Wan for real AI animation
+                from app.models.job import JobType
+                use_ffmpeg = (job.job_type == JobType.smart_video)
+
+                if not use_ffmpeg and shot.render_type == RenderType.animate:
                     url, cost = await animate_frame(shot.frame_url, shot.motion, shot.model)
                 else:
                     total = len(job.shots)
@@ -114,7 +126,37 @@ async def run_assembling(job_id: str):
         assembled_url = await stitch_and_brand(clip_urls, brand_kit)
 
         _set_state(db, job, JobState.EXPORTING)
-        final_urls = await export_ratios(assembled_url)
+
+        # Download logo if provided for FFmpeg watermark
+        logo_path = None
+        if job.logo_url:
+            try:
+                import httpx
+                from pathlib import Path
+                logo_dir = Path("static/logos")
+                logo_dir.mkdir(parents=True, exist_ok=True)
+                logo_file = logo_dir / f"logo_{job.id[:8]}.png"
+                if not logo_file.exists():
+                    if job.logo_url.startswith("data:"):
+                        import base64
+                        header, data = job.logo_url.split(",", 1)
+                        logo_file.write_bytes(base64.b64decode(data))
+                    else:
+                        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                            resp = await client.get(job.logo_url)
+                            resp.raise_for_status()
+                            logo_file.write_bytes(resp.content)
+                logo_path = str(logo_file)
+                logger.info(f"Logo ready for watermark: {logo_path}")
+            except Exception as e:
+                logger.error(f"Failed to download logo: {e}")
+
+        final_urls = await export_ratios(
+            assembled_url,
+            logo_path=logo_path,
+            overlay_text=job.overlay_text,
+            overlay_color=job.overlay_color or "#FFFFFF",
+        )
         job.cost_total = sum(float(s.cost or 0) for s in job.shots)
         job.final_urls = final_urls
         _set_state(db, job, JobState.DONE)

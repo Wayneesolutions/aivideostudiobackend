@@ -270,7 +270,7 @@ async def stitch_and_brand(clip_urls: list[str], brand_kit: dict) -> str:
     return f"https://stub-cdn.wayneesolutions.com/assembled/{video_id}.mp4"
 
 
-async def export_ratios(video_url: str) -> dict:
+async def export_ratios(video_url: str, logo_path: str | None = None, overlay_text: str | None = None, overlay_color: str = "#FFFFFF") -> dict:
     if "stub-cdn" in video_url:
         vid_id = str(uuid.uuid4())[:8]
         return {
@@ -303,17 +303,63 @@ async def export_ratios(video_url: str) -> dict:
         "16:9": ("1920", "1080", f"export_{uuid.uuid4().hex}_169.mp4"),
     }
 
+    # Build FFmpeg filter for logo and text watermark
+    def build_vf(w: str, h: str, logo_p: str | None, text: str | None, color: str) -> str:
+        scale = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        filters = [scale]
+
+        if logo_p and Path(logo_p).exists():
+            logo_size = int(int(w) * 0.12)
+            margin = int(int(w) * 0.02)
+            filters.append(f"movie={logo_p}[logo];[in][logo]overlay=W-{logo_size+margin}:{margin}:eval=init[out]")
+            return ",".join(filters)
+
+        if text:
+            # Convert hex color to FFmpeg format
+            hex_color = color.lstrip("#")
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            font_size = max(int(int(w) * 0.04), 24)
+            bar_h = int(int(h) * 0.08)
+            safe_text = text.replace("'", "").replace(":", r"\:").replace("=", r"\=")
+            filters.append(
+                f"drawbox=x=0:y=ih-{bar_h}:w=iw:h={bar_h}:color=black@0.7:t=fill,"
+                f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor=#{hex_color}:"
+                f"x=(w-text_w)/2:y=h-{bar_h//2}-text_h/2:shadowcolor=black:shadowx=2:shadowy=2"
+            )
+
+        return ",".join(filters)
+
     result = {}
     for ratio, (w, h, out_filename) in ratios.items():
         output_path = OUTPUT_DIR / out_filename
-        success = await _run_ffmpeg_async([
-            "-i", str(input_path),
-            "-vf", f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-preset", "medium", "-crf", "18",
-            "-movflags", "+faststart",
-            str(output_path),
-        ])
+        vf = build_vf(w, h, logo_path, overlay_text, overlay_color)
+
+        # Logo overlay needs different filter_complex approach
+        if logo_path and Path(logo_path).exists():
+            logo_size = int(int(w) * 0.12)
+            margin = int(int(w) * 0.02)
+            scale_vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
+            logo_vf = f"scale={logo_size}:-1"
+            success = await _run_ffmpeg_async([
+                "-i", str(input_path),
+                "-i", str(logo_path),
+                "-filter_complex",
+                f"[0:v]{scale_vf}[bg];[1:v]{logo_vf}[logo];[bg][logo]overlay=W-{logo_size+margin}:{margin}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "medium", "-crf", "18",
+                "-movflags", "+faststart",
+                str(output_path),
+            ])
+        else:
+            success = await _run_ffmpeg_async([
+                "-i", str(input_path),
+                "-vf", vf,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "medium", "-crf", "18",
+                "-movflags", "+faststart",
+                str(output_path),
+            ])
+
         if success and output_path.exists():
             result[ratio] = f"http://127.0.0.1:8000/static/videos/{out_filename}"
             logger.info(f"export_ratios {ratio} complete: {out_filename}")
